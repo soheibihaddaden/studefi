@@ -7,12 +7,15 @@ et envoie des notifications Telegram.
 
 import json
 import os
+import random
 import re
 import time
 import urllib.request
 from datetime import datetime, timezone
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -57,10 +60,38 @@ RESIDENCES = [
 
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
     ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Cache-Control": "max-age=0",
 }
+
+REQUEST_TIMEOUT = 60
+
+
+def create_session():
+    """Crée une session requests avec retry automatique."""
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    retry_strategy = Retry(
+        total=5,
+        backoff_factor=2,  # 2s, 4s, 8s, 16s, 32s
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -70,20 +101,36 @@ STATE_FILE = "studefi_last_state.json"
 
 # ── Scraping ─────────────────────────────────────────────────────────────────
 
-def get_available_codes():
+def fetch_with_retry(session, url, max_attempts=3):
+    """Fetch une URL avec retry manuel en plus du retry de la session."""
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = session.get(url, timeout=REQUEST_TIMEOUT)
+            resp.raise_for_status()
+            return resp
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            last_error = e
+            wait = 5 * attempt + random.uniform(1, 3)
+            print(f"\n    [!] Tentative {attempt}/{max_attempts} échouée: {e}")
+            if attempt < max_attempts:
+                print(f"    [!] Nouvelle tentative dans {wait:.0f}s...")
+                time.sleep(wait)
+    raise last_error
+
+
+def get_available_codes(session):
     """Récupère la liste des codes résidences avec dispo depuis une page."""
     url = RESIDENCE_URL.format(code=RESIDENCES[0]["code"])
-    resp = requests.get(url, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
+    resp = fetch_with_retry(session, url)
     codes = re.findall(r"tabLogementsDisponibles\.push\('([^']+)'\)", resp.text)
     return set(codes)
 
 
-def get_residence_details(code):
+def get_residence_details(session, code):
     """Récupère les détails des logements disponibles pour une résidence."""
     url = RESIDENCE_URL.format(code=code)
-    resp = requests.get(url, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
+    resp = fetch_with_retry(session, url)
     soup = BeautifulSoup(resp.text, "html.parser")
 
     logements = []
@@ -286,9 +333,11 @@ def main():
     print("  STUDEFI Monitor — Île-de-France")
     print("=" * 60)
 
+    session = create_session()
+
     # Etape 1 : récupérer les codes avec dispo (1 seule requête)
     print("\n[*] Vérification des résidences avec disponibilité...")
-    available_codes = get_available_codes()
+    available_codes = get_available_codes(session)
     print(f"[*] {len(available_codes)} résidence(s) avec dispo : {available_codes}\n")
 
     previous_state = load_previous_state()
@@ -305,7 +354,7 @@ def main():
 
         if has_dispo:
             try:
-                logements = get_residence_details(res["code"])
+                logements = get_residence_details(session, res["code"])
                 all_results.append((res, logements))
 
                 nb = sum(int(l.get("nb_dispo", 0)) for l in logements)
@@ -320,7 +369,7 @@ def main():
                         "url": RESIDENCE_URL.format(code=res["code"]),
                     })
 
-                time.sleep(0.5)
+                time.sleep(random.uniform(1.0, 3.0))
             except Exception as e:
                 print(f"erreur: {e}")
                 all_results.append((res, []))
