@@ -36,4 +36,5 @@ jobs:
           cp public/studefi.html index.html
           git add index.html studefi_last_state.json
           git diff --staged --quiet || git commit -m "Update disponibilités STUDEFI"
+          git pull --rebase
           git push
