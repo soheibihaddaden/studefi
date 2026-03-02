@@ -334,13 +334,25 @@ def main():
     print("=" * 60)
 
     session = create_session()
+    previous_state = load_previous_state()
 
     # Etape 1 : récupérer les codes avec dispo (1 seule requête)
     print("\n[*] Vérification des résidences avec disponibilité...")
-    available_codes = get_available_codes(session)
-    print(f"[*] {len(available_codes)} résidence(s) avec dispo : {available_codes}\n")
+    try:
+        available_codes = get_available_codes(session)
+        print(f"[*] {len(available_codes)} résidence(s) avec dispo : {available_codes}\n")
+    except Exception as e:
+        print(f"\n[!] Impossible de joindre studefi.fr : {e}")
+        print("[!] Le site est temporairement inaccessible, on réessaiera au prochain scan.")
+        # Générer la page HTML avec l'état précédent pour ne pas crasher
+        scan_time = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
+        all_results = [(res, []) for res in RESIDENCES]
+        html = generate_html(all_results, scan_time + " (site inaccessible)")
+        os.makedirs("public", exist_ok=True)
+        with open("public/studefi.html", "w", encoding="utf-8") as f:
+            f.write(html)
+        return  # Sortir proprement sans erreur
 
-    previous_state = load_previous_state()
     current_state = {}
     all_results = []
     new_availabilities = []
